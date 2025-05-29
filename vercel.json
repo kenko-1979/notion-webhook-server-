@@ -17,9 +17,7 @@
         }
     ],
     "env": {
-        "PYTHONPATH": ".",
-        "NOTION_TOKEN": "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",
-        "NOTION_DATABASE_ID": "1ff74c56666e80fea8d8e73c2cde1df8"
+        "PYTHONPATH": "."
     },
     "git": {
         "deploymentEnabled": {
