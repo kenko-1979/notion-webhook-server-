@@ -9,22 +9,26 @@ from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
 import logging
-import hmac
-import hashlib
+import sys
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging to output to stdout
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="ChatGPT Webhook Bot4")
+app = FastAPI(title="ChatGPT Summary Server")
 
 # Initialize Notion client
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET", "")  # Webhookの検証用シークレット
+
+logger.info(f"Starting application with database ID: {NOTION_DATABASE_ID}")
 
 if not NOTION_TOKEN or not NOTION_DATABASE_ID:
     logger.error("Missing required environment variables")
@@ -32,6 +36,9 @@ if not NOTION_TOKEN or not NOTION_DATABASE_ID:
 
 try:
     notion = Client(auth=NOTION_TOKEN)
+    # Test the connection immediately
+    notion.users.me()
+    logger.info("Successfully connected to Notion API")
 except Exception as e:
     logger.error(f"Failed to initialize Notion client: {e}")
     raise
@@ -81,11 +88,13 @@ def create_notion_page(title, summary, content, url=None):
 async def root():
     try:
         # Test Notion connection
-        notion.users.me()
+        user = notion.users.me()
+        logger.info(f"Health check successful, connected as user: {user.get('name', 'unknown')}")
         return {
-            "message": "ChatGPT Webhook Bot4 is running",
+            "message": "ChatGPT Summary Server is running",
             "status": "active",
-            "notion_connection": "ok"
+            "notion_connection": "ok",
+            "user": user.get("name")
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -96,46 +105,6 @@ async def root():
                 "status": "error",
                 "error": str(e)
             }
-        )
-
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    try:
-        body = await request.json()
-        
-        # Handle Notion's URL verification challenge
-        if body.get("type") == "url_verification":
-            challenge = body.get("challenge")
-            logger.info(f"Received webhook verification challenge: {challenge}")
-            
-            # 検証トークンを返す
-            return JSONResponse({
-                "type": "url_verification",
-                "challenge": challenge
-            })
-        
-        # 通常のWebhookイベントの処理
-        logger.info(f"Received webhook request: {json.dumps(body, ensure_ascii=False)}")
-        
-        # イベントの種類に基づいて処理
-        event_type = body.get("type")
-        if event_type == "block_changed":
-            # ブロックの変更イベント
-            logger.info("Block changed event received")
-        elif event_type == "page_changed":
-            # ページの変更イベント
-            logger.info("Page changed event received")
-        elif event_type == "database_changed":
-            # データベースの変更イベント
-            logger.info("Database changed event received")
-        
-        return JSONResponse({"status": "success"})
-        
-    except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
         )
 
 @app.post("/chat-summary")
@@ -172,6 +141,18 @@ async def save_chat_summary(summary: ChatSummary):
                 "message": str(e)
             }
         )
+
+# Error handler for uncaught exceptions
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Uncaught exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "message": "An unexpected error occurred",
+            "error": str(exc)
+        }
+    )
 
 # Vercel handler
 handler = Mangum(app)
