@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import Optional
 import logging
 import sys
+import traceback
 
 # Configure logging to output to stdout
 logging.basicConfig(
@@ -24,11 +25,12 @@ load_dotenv()
 
 app = FastAPI(title="ChatGPT Summary Server")
 
-# Initialize Notion client
+# Initialize Notion client with direct values for local testing
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 logger.info(f"Starting application with database ID: {NOTION_DATABASE_ID}")
+logger.info(f"Environment variables present: NOTION_TOKEN={'*' * len(NOTION_TOKEN) if NOTION_TOKEN else 'None'}, NOTION_DATABASE_ID={NOTION_DATABASE_ID or 'None'}")
 
 if not NOTION_TOKEN or not NOTION_DATABASE_ID:
     logger.error("Missing required environment variables")
@@ -37,10 +39,11 @@ if not NOTION_TOKEN or not NOTION_DATABASE_ID:
 try:
     notion = Client(auth=NOTION_TOKEN)
     # Test the connection immediately
-    notion.users.me()
-    logger.info("Successfully connected to Notion API")
+    user = notion.users.me()
+    logger.info(f"Successfully connected to Notion API as user: {user.get('name', 'unknown')}")
 except Exception as e:
     logger.error(f"Failed to initialize Notion client: {e}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
     raise
 
 class ChatSummary(BaseModel):
@@ -94,16 +97,19 @@ async def root():
             "message": "ChatGPT Summary Server is running",
             "status": "active",
             "notion_connection": "ok",
-            "user": user.get("name")
+            "user": user.get("name"),
+            "database_id": NOTION_DATABASE_ID
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
             content={
                 "message": "Service is running but Notion connection failed",
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
+                "traceback": traceback.format_exc()
             }
         )
 

@@ -5,7 +5,8 @@
             "src": "main.py",
             "use": "@vercel/python",
             "config": {
-                "runtime": "python3.10"
+                "runtime": "python3.10",
+                "maxLambdaSize": "15mb"
             }
         }
     ],
@@ -19,5 +20,14 @@
         "PYTHONPATH": ".",
         "NOTION_TOKEN": "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",
         "NOTION_DATABASE_ID": "1ff74c56666e80fea8d8e73c2cde1df8"
+    },
+    "git": {
+        "deploymentEnabled": {
+            "main": true
+        }
+    },
+    "github": {
+        "enabled": true,
+        "silent": true
     }
 } 
