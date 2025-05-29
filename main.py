@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from notion_client import Client
 import os
@@ -8,6 +8,11 @@ import json
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -15,10 +20,18 @@ load_dotenv()
 app = FastAPI(title="ChatGPT Webhook Bot4")
 
 # Initialize Notion client
-NOTION_TOKEN = os.getenv("NOTION_TOKEN", "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")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "1ff74c56666e80fea8d8e73c2cde1df8")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
-notion = Client(auth=NOTION_TOKEN)
+if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+    logger.error("Missing required environment variables")
+    raise ValueError("NOTION_TOKEN and NOTION_DATABASE_ID must be set")
+
+try:
+    notion = Client(auth=NOTION_TOKEN)
+except Exception as e:
+    logger.error(f"Failed to initialize Notion client: {e}")
+    raise
 
 class ChatSummary(BaseModel):
     title: str
@@ -29,6 +42,8 @@ class ChatSummary(BaseModel):
 def create_notion_page(title, summary, content, url=None):
     """Create a new page in Notion database"""
     try:
+        logger.info(f"Creating new page with title: {title}")
+        
         # Combine summary and content
         combined_text = f"要約:\n{summary}\n\n内容:\n{content}"
         
@@ -43,7 +58,7 @@ def create_notion_page(title, summary, content, url=None):
                     "title": [{"text": {"content": title}}]
                 },
                 "テキスト": {
-                    "rich_text": [{"text": {"content": combined_text[:2000]}}]  # Notion has a 2000 character limit
+                    "rich_text": [{"text": {"content": combined_text[:2000]}}]
                 },
                 "日付": {
                     "date": {"start": current_time}
@@ -53,20 +68,37 @@ def create_notion_page(title, summary, content, url=None):
                 }
             }
         )
+        logger.info("Successfully created page in Notion")
         return True, response
     except Exception as e:
+        logger.error(f"Failed to create page in Notion: {e}")
         return False, str(e)
 
 @app.get("/")
 async def root():
-    return {
-        "message": "ChatGPT Webhook Bot4 is running",
-        "status": "active"
-    }
+    try:
+        # Test Notion connection
+        notion.users.me()
+        return {
+            "message": "ChatGPT Webhook Bot4 is running",
+            "status": "active",
+            "notion_connection": "ok"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "message": "Service is running but Notion connection failed",
+                "status": "error",
+                "error": str(e)
+            }
+        )
 
 @app.post("/chat-summary")
 async def save_chat_summary(summary: ChatSummary):
     try:
+        logger.info(f"Received request to save summary: {summary.title}")
         success, response = create_notion_page(
             summary.title,
             summary.summary,
@@ -80,6 +112,7 @@ async def save_chat_summary(summary: ChatSummary):
                 "message": "Successfully saved to Notion"
             })
         else:
+            logger.error(f"Failed to save to Notion: {response}")
             return JSONResponse(
                 status_code=500,
                 content={
@@ -88,6 +121,7 @@ async def save_chat_summary(summary: ChatSummary):
                 }
             )
     except Exception as e:
+        logger.error(f"Error in save_chat_summary: {e}")
         return JSONResponse(
             status_code=500,
             content={
@@ -104,17 +138,17 @@ async def handle_webhook(request: Request):
         # Handle Notion's URL verification challenge
         if body.get("type") == "url_verification":
             challenge = body.get("challenge")
-            print(f"Received webhook verification challenge: {challenge}")
+            logger.info(f"Received webhook verification challenge: {challenge}")
             return JSONResponse({
                 "type": "url_verification",
                 "challenge": challenge
             })
         
-        print(f"Received webhook request: {json.dumps(body, ensure_ascii=False)}")
+        logger.info(f"Received webhook request: {json.dumps(body, ensure_ascii=False)}")
         return JSONResponse({"status": "success"})
         
     except Exception as e:
-        print(f"Error processing webhook: {str(e)}")
+        logger.error(f"Error processing webhook: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"status": "error", "message": str(e)}
@@ -126,5 +160,5 @@ handler = Mangum(app)
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
-    print(f"Starting server on port {port}")
+    logger.info(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port) 
