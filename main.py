@@ -9,6 +9,8 @@ from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
 import logging
+import hmac
+import hashlib
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +24,7 @@ app = FastAPI(title="ChatGPT Webhook Bot4")
 # Initialize Notion client
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET", "")  # Webhookの検証用シークレット
 
 if not NOTION_TOKEN or not NOTION_DATABASE_ID:
     logger.error("Missing required environment variables")
@@ -95,6 +98,46 @@ async def root():
             }
         )
 
+@app.post("/webhook")
+async def handle_webhook(request: Request):
+    try:
+        body = await request.json()
+        
+        # Handle Notion's URL verification challenge
+        if body.get("type") == "url_verification":
+            challenge = body.get("challenge")
+            logger.info(f"Received webhook verification challenge: {challenge}")
+            
+            # 検証トークンを返す
+            return JSONResponse({
+                "type": "url_verification",
+                "challenge": challenge
+            })
+        
+        # 通常のWebhookイベントの処理
+        logger.info(f"Received webhook request: {json.dumps(body, ensure_ascii=False)}")
+        
+        # イベントの種類に基づいて処理
+        event_type = body.get("type")
+        if event_type == "block_changed":
+            # ブロックの変更イベント
+            logger.info("Block changed event received")
+        elif event_type == "page_changed":
+            # ページの変更イベント
+            logger.info("Page changed event received")
+        elif event_type == "database_changed":
+            # データベースの変更イベント
+            logger.info("Database changed event received")
+        
+        return JSONResponse({"status": "success"})
+        
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
+
 @app.post("/chat-summary")
 async def save_chat_summary(summary: ChatSummary):
     try:
@@ -128,30 +171,6 @@ async def save_chat_summary(summary: ChatSummary):
                 "status": "error",
                 "message": str(e)
             }
-        )
-
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    try:
-        body = await request.json()
-        
-        # Handle Notion's URL verification challenge
-        if body.get("type") == "url_verification":
-            challenge = body.get("challenge")
-            logger.info(f"Received webhook verification challenge: {challenge}")
-            return JSONResponse({
-                "type": "url_verification",
-                "challenge": challenge
-            })
-        
-        logger.info(f"Received webhook request: {json.dumps(body, ensure_ascii=False)}")
-        return JSONResponse({"status": "success"})
-        
-    except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
         )
 
 # Vercel handler
