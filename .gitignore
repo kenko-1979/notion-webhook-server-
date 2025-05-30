@@ -1,5 +1,16 @@
-.env
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Vercel
 .vercel
 *.log 
