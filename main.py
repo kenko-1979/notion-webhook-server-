@@ -2,7 +2,8 @@ import os
 import logging
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, status, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, field_validator, ValidationError
 from notion_client import AsyncClient
 from dotenv import load_dotenv
 from mangum import Mangum
@@ -113,7 +114,7 @@ def cache_result(cache_key: str, ttl: int = CACHE_TTL):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """アプリケーションのライフスパン管理"""
-    global notion_client
+    global notion_client, processing
     # 起動時の処理
     logger.info("Initializing application...")
     notion_client = AsyncClient(auth=NOTION_TOKEN)
@@ -131,8 +132,10 @@ async def lifespan(app: FastAPI):
         raise
     finally:
         # 終了時の処理
+        processing = False  # バッチ処理を停止
         if notion_client:
             await notion_client.aclose()
+            notion_client = None
         logger.info("Closed Notion client")
 
 # FastAPIアプリケーションの初期化
@@ -251,16 +254,15 @@ async def process_batch(batch):
             metrics.add_queue_time(queue_time)
             
             notion_start = datetime.now(JST)
-            page = await create_notion_page(message, timestamp)
+            page_id = await create_notion_page(message)
             notion_time = (datetime.now(JST) - notion_start).total_seconds()
             metrics.add_notion_time(notion_time)
             
-            logger.info(f"Successfully created Notion page with ID: {page['id']}")
             logger.info(f"Processed item: queue_time={queue_time:.2f}s, notion_time={notion_time:.2f}s")
         except Exception as e:
             metrics.failed_requests += 1
             logger.error(f"Error processing item in batch: {str(e)}")
-            raise
+            continue  # エラーが発生しても次のアイテムの処理を継続
 
 # カスタムエラークラス
 class NotionError(Exception):
@@ -282,27 +284,43 @@ class DatabaseError(Exception):
         super().__init__(self.message)
 
 # エラーハンドラー
-@app.exception_handler(ValidationError)
-async def validation_exception_handler(request: Request, exc: ValidationError):
-    errors = []
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """バリデーションエラーのハンドラー"""
+    error_details = []
     for error in exc.errors():
-        loc = error.get("loc", [])
-        field = loc[0] if loc else "unknown"
-        msg = error.get("msg", "Validation error")
-        errors.append(f"{field}: {msg}")
+        error_details.append({
+            "field": error["loc"][-1],
+            "message": error["msg"]
+        })
 
-    error_msg = "; ".join(errors)
-    logger.error(f"Validation error: {error_msg}")
+    error_response = {
+        "error": "Validation Error",
+        "message": "Request validation failed",
+        "details": error_details,
+        "timestamp": get_jst_timestamp()
+    }
     
+    logger.error(f"Validation error: {error_details}")
     return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={
-            "error": "Validation Error",
-            "message": error_msg,
-            "path": request.url.path,
-            "timestamp": get_jst_timestamp(),
-            "details": errors
-        }
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content=error_response
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """HTTPエラーのハンドラー"""
+    error_response = {
+        "error": "HTTP Error",
+        "message": exc.detail,
+        "status_code": exc.status_code,
+        "timestamp": get_jst_timestamp()
+    }
+    
+    logger.error(f"HTTP error: {error_response}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_response
     )
 
 @app.exception_handler(NotionError)
@@ -336,31 +354,37 @@ async def database_error_handler(request: Request, exc: DatabaseError):
     wait=wait_exponential(multiplier=1, min=4, max=10),
     reraise=True
 )
-async def create_notion_page(message: ChatMessage, timestamp: str):
-    """Notionページを作成する関数（リトライ機能付き）"""
+async def create_notion_page(message: ChatMessage) -> str:
+    """Notionページを作成する"""
     try:
-        new_page = await notion_client.pages.create(
+        # プロパティの変換
+        properties = {
+            "名前": {"title": [{"text": {"content": message.name}}]},
+            "テキスト": {"rich_text": [{"text": {"content": message.content}}]},
+            "URL": {"url": str(message.url)},  # URLを文字列として確実に変換
+            "日付": {"date": {"start": message.timestamp or get_jst_timestamp()}}
+        }
+        
+        # ページの作成
+        response = await notion_client.pages.create(
             parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "名前": {"title": [{"text": {"content": message.name}}]},
-                "テキスト": {"rich_text": [{"text": {"content": message.content}}]},
-                "URL": {"url": message.url},
-                "日付": {"date": {"start": timestamp}},
-            }
+            properties=properties
         )
-        logger.info(f"Successfully created Notion page with ID: {new_page['id']}")
-        return new_page
+        
+        page_id = response["id"]
+        logger.info(f"Successfully created Notion page with ID: {page_id}")
+        return page_id
     except Exception as e:
         error_msg = f"Failed to create Notion page: {str(e)}"
         logger.error(error_msg)
+        logger.error(f"Request details: {message.model_dump()}")
         if "Unauthorized" in str(e):
             raise NotionError(error_msg, status_code=status.HTTP_401_UNAUTHORIZED)
         elif "Not Found" in str(e):
             raise NotionError(error_msg, status_code=status.HTTP_404_NOT_FOUND)
         elif "Validation" in str(e):
-            raise ValidationError(error_msg)
-        else:
-            raise NotionError(error_msg)
+            raise NotionError(error_msg, status_code=status.HTTP_400_BAD_REQUEST)
+        raise NotionError(error_msg)
 
 @app.get("/")
 async def root():
@@ -388,8 +412,7 @@ async def webhook(message: ChatMessage, background_tasks: BackgroundTasks):
         logger.info(f"Received webhook request for chat: {message.name}")
         start_time = datetime.now(JST)
         
-        timestamp = message.timestamp or get_jst_timestamp()
-        await request_queue.put((message, timestamp, start_time))
+        await request_queue.put((message, None, start_time))
         
         end_time = datetime.now(JST)
         processing_time = (end_time - start_time).total_seconds()
@@ -400,7 +423,7 @@ async def webhook(message: ChatMessage, background_tasks: BackgroundTasks):
             "status": "accepted",
             "message": "Request queued for processing",
             "queue_position": request_queue.qsize(),
-            "timestamp": timestamp
+            "timestamp": get_jst_timestamp()
         }
         
         return JSONResponse(
@@ -411,14 +434,14 @@ async def webhook(message: ChatMessage, background_tasks: BackgroundTasks):
     except ValidationError as e:
         metrics.failed_requests += 1
         logger.error(f"Validation error in webhook endpoint: {str(e)}")
+        logger.error(f"Request details: {message.model_dump()}")
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={
                 "error": "Validation Error",
                 "message": str(e),
-                "path": "/webhook",
                 "timestamp": get_jst_timestamp(),
-                "details": [str(err) for err in e.errors()]
+                "details": [{"field": err["loc"][-1], "message": err["msg"]} for err in e.errors()]
             }
         )
     except Exception as e:

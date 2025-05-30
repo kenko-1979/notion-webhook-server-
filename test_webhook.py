@@ -8,9 +8,18 @@ def test_webhook_success():
     url = "http://localhost:10000/webhook"
     headers = {"Content-Type": "application/json"}
     data = {
-        "name": "Test Message",
-        "content": "This is a test message",
-        "url": "https://example.com"
+        "name": "開発進捗要約 2024-03-30",
+        "content": """本日の開発進捗：
+1. エラーハンドリングの改善
+- カスタムエラークラスの実装
+- バリデーション処理の強化
+- エラーレスポンスの構造化
+
+2. パフォーマンス最適化
+- キュー処理時間: 1.0-1.02秒
+- Notion API処理時間: 0.36-4.56秒""",
+        "url": "https://example.com",
+        "timestamp": "2024-03-30T10:00:00+09:00"
     }
     
     start_time = time.time()
@@ -22,7 +31,7 @@ def test_webhook_success():
         print(f"Status code: {response.status_code}")
         print(f"Response: {response.json()}")
         
-        assert response.status_code == 202  # Changed to match the new status code
+        assert response.status_code == 202
         response_data = response.json()
         assert "status" in response_data
         assert "message" in response_data
@@ -149,5 +158,34 @@ def run_all_tests():
     
     print("\nAll tests completed successfully!")
 
+def test_webhook():
+    url = "http://localhost:10000/webhook"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "name": "開発進捗要約 2024-03-30",
+        "content": """本日の開発進捗：
+
+1. エラーハンドリングの改善
+- カスタムエラークラスの実装
+- バリデーション処理の強化
+- エラーレスポンスの構造化
+
+2. パフォーマンス最適化
+- キュー処理時間: 1.0-1.02秒
+- Notion API処理時間: 0.36-4.56秒
+
+3. 実装された機能
+- 非同期バッチ処理
+- メトリクス収集
+- キャッシュ機能""",
+        "url": "https://github.com/kenko-1979/notion-webhook-server-",
+        "timestamp": None
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    print(f"Status Code: {response.status_code}")
+    print(f"Response: {response.text}")
+
 if __name__ == "__main__":
-    run_all_tests() 
+    run_all_tests()
+    test_webhook() 

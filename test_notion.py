@@ -33,7 +33,7 @@ def create_test_page():
                     "date": {"start": current_time}
                 },
                 "URL": {
-                    "rich_text": [{"text": {"content": "https://chat.openai.com"}}]
+                    "url": "https://chat.openai.com"
                 }
             }
         )
@@ -43,12 +43,34 @@ def create_test_page():
         print(f"Error: {str(e)}")
         return False, str(e)
 
+def test_database_info():
+    try:
+        # データベース情報の取得
+        database = notion.databases.retrieve(NOTION_DATABASE_ID)
+        print("\nDatabase Info:")
+        print(f"Database ID: {database['id']}")
+        print(f"Title: {database['title'][0]['text']['content'] if database['title'] else 'Untitled'}")
+        print("\nProperties:")
+        for prop_name, prop_info in database['properties'].items():
+            print(f"- {prop_name} ({prop_info['type']})")
+        
+        return True, database
+    except Exception as e:
+        print(f"\nError getting database info: {str(e)}")
+        return False, str(e)
+
 if __name__ == "__main__":
     print("Testing Notion API connection...")
     try:
         # Test connection
         user = notion.users.me()
         print(f"Connected as user: {user.get('name', 'unknown')}")
+        
+        # Check database info
+        success, database_info = test_database_info()
+        if not success:
+            print(f"Database info check failed: {database_info}")
+            exit(1)
         
         # Create test page
         success, response = create_test_page()
